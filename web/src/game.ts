@@ -27,6 +27,82 @@ const state: GameState = {
   onScore: () => {},
 };
 
+// ─── Case geometry helper ─────────────────────────────────────────────────────
+// Returns the bounding box and camera lens circle for a phone case drawn at
+// (cx, cy) with the given scale. Used for hit-testing in the sticker scene.
+function getCaseGeometry(cx: number, cy: number, scale: number) {
+  const w = 110 * scale;
+  const h = 190 * scale;
+  const x = cx - w / 2;
+  const y = cy - h / 2;
+  // Camera lens centre matches drawPhoneCase exactly
+  const lensX = cx - 14 * scale;
+  const lensY = y + 26 * scale;
+  const lensR = 10 * scale;
+  return { x, y, w, h, lensX, lensY, lensR };
+}
+
+// Returns true if point (px,py) is inside the case body AND not on the lens.
+function isValidStickerPos(
+  px: number, py: number,
+  cx: number, cy: number, scale: number,
+  shape: GameState["caseShape"]
+): boolean {
+  const { x, y, w, h, lensX, lensY, lensR } = getCaseGeometry(cx, cy, scale);
+
+  // ── inside the rectangular bounding box (generous for rounded shapes) ──
+  const margin = 10;
+  if (px < x + margin || px > x + w - margin || py < y + margin || py > y + h - margin) {
+    return false;
+  }
+
+  // ── for rounded / bumper shapes, reject corners ──
+  if (shape !== "square") {
+    const r = shape === "bumper" ? 36 * scale : 28 * scale;
+    // Check each corner
+    const corners = [
+      { cx: x + r, cy: y + r },
+      { cx: x + w - r, cy: y + r },
+      { cx: x + r, cy: y + h - r },
+      { cx: x + w - r, cy: y + h - r },
+    ];
+    for (const corner of corners) {
+      const dx = px - corner.cx;
+      const dy = py - corner.cy;
+      if (dx * dx + dy * dy > r * r &&
+          px < corner.cx && py < corner.cy ||
+          px > corner.cx && py < corner.cy ||
+          px < corner.cx && py > corner.cy ||
+          px > corner.cx && py > corner.cy) {
+        // Only reject if actually in the corner quadrant outside the arc
+        const inCornerQuadrant =
+          (px < x + r && py < y + r) ||
+          (px > x + w - r && py < y + r) ||
+          (px < x + r && py > y + h - r) ||
+          (px > x + w - r && py > y + h - r);
+        if (inCornerQuadrant) {
+          // distance from nearest corner centre
+          let minDist = Infinity;
+          for (const c of corners) {
+            const d = Math.sqrt((px - c.cx) ** 2 + (py - c.cy) ** 2);
+            if (d < minDist) minDist = d;
+          }
+          if (minDist > r) return false;
+        }
+      }
+    }
+  }
+
+  // ── block the camera lens (with a little extra padding) ──
+  const dxL = px - lensX;
+  const dyL = py - lensY;
+  if (dxL * dxL + dyL * dyL < (lensR + 8) * (lensR + 8)) {
+    return false;
+  }
+
+  return true;
+}
+
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 function drawPhoneCase(
   gfx: Phaser.GameObjects.Graphics,
@@ -229,6 +305,7 @@ class ShapeScene extends Phaser.Scene {
     const btnText = this.add.text(VW / 2, VH - 74, "Next →", {
       fontFamily: "Manrope, sans-serif", fontSize: "20px", color: "#ffffff", fontStyle: "bold",
     }).setOrigin(0.5);
+    void btnText;
     const btnZone = this.add.zone(VW / 2, VH - 74, 200, 56).setInteractive({ useHandCursor: true });
     btnZone.on("pointerover", () => drawBtn(true));
     btnZone.on("pointerout", () => drawBtn(false));
@@ -237,7 +314,6 @@ class ShapeScene extends Phaser.Scene {
       this.cameras.main.fadeOut(300, 253, 244, 255);
       this.time.delayedCall(300, () => this.scene.start("clean"));
     });
-    void btnText;
     this.cameras.main.fadeIn(400, 253, 244, 255);
   }
 }
@@ -292,6 +368,7 @@ class CleanScene extends Phaser.Scene {
     const progressBg = this.add.graphics();
     progressBg.fillStyle(0xd1d5db, 1);
     progressBg.fillRoundedRect(VW / 2 - 100, 162, 200, 14, 7);
+    void progressBg;
     this.progressBar = this.add.graphics();
 
     this.caseGfx = this.add.graphics();
@@ -521,16 +598,16 @@ class PaintScene extends Phaser.Scene {
 }
 
 // ─── SCENE 5: Stickers ───────────────────────────────────────────────────────
+// Case constants for the sticker scene (must match redrawCase scale below)
+const STICKER_CASE_X = VW / 2;
+const STICKER_CASE_Y = 300;
+const STICKER_CASE_SCALE = 1.05;
+
 class StickerScene extends Phaser.Scene {
   private caseGfx!: Phaser.GameObjects.Graphics;
   private placedStickers: Phaser.GameObjects.Text[] = [];
   private stickerData: PlacedSticker[] = [];
-
-  // Case bounds (matching paint scene scale 1.05)
-  private readonly caseX = VW / 2;
-  private readonly caseY = 300;
-  private readonly caseW = 110 * 1.05;
-  private readonly caseH = 190 * 1.05;
+  private noDropFeedback!: Phaser.GameObjects.Text;
 
   constructor() { super("stickers"); }
 
@@ -553,16 +630,22 @@ class StickerScene extends Phaser.Scene {
     this.add.text(VW / 2, 38, "🌟  Add Stickers!", {
       fontFamily: "Fraunces, serif", fontSize: "28px", color: "#7c3aed",
     }).setOrigin(0.5);
-    this.add.text(VW / 2, 74, "Tap a sticker, then tap the case to place it", {
-      fontFamily: "Manrope, sans-serif", fontSize: "13px", color: "#6b21a8",
+    this.add.text(VW / 2, 74, "Pick a sticker, then tap INSIDE the case to place it", {
+      fontFamily: "Manrope, sans-serif", fontSize: "12px", color: "#6b21a8",
       align: "center", wordWrap: { width: VW - 30 },
     }).setOrigin(0.5);
 
-    // Phone case
-    this.caseGfx = this.add.graphics();
+    // Phone case (drawn at depth 1 so stickers go on top at depth 6)
+    this.caseGfx = this.add.graphics().setDepth(1);
     this.redrawCase();
 
-    // Sticker palette rows
+    // "Can't place here" feedback text — hidden until needed
+    this.noDropFeedback = this.add.text(VW / 2, STICKER_CASE_Y, "", {
+      fontFamily: "Manrope, sans-serif", fontSize: "13px", color: "#dc2626",
+      align: "center",
+    }).setOrigin(0.5).setDepth(20).setAlpha(0);
+
+    // ── Sticker palette ──────────────────────────────────────────────────────
     const STICKERS = [
       "⭐","💖","🌈","🦋","🌸","🍭","🎀","🔥","💎","🌙",
       "🦄","🍓","🌺","✨","🎵","🍦","🌊","🐱","🐶","🍀",
@@ -573,13 +656,12 @@ class StickerScene extends Phaser.Scene {
     const sGap = 8;
     const totalW = cols * sSize + (cols - 1) * sGap;
     const startX = (VW - totalW) / 2 + sSize / 2;
-    const startY = 480;
+    const startY = 490;
 
     let selectedSticker: string | null = null;
     const stickerBtns: Phaser.GameObjects.Graphics[] = [];
-    const stickerZones: Phaser.GameObjects.Text[] = [];
 
-    // Draw sticker tray background
+    // Tray background
     const rows = Math.ceil(STICKERS.length / cols);
     const trayH = rows * (sSize + sGap) + 16;
     const trayBg = this.add.graphics();
@@ -592,18 +674,12 @@ class StickerScene extends Phaser.Scene {
       stickerBtns.forEach((btn, bi) => {
         btn.clear();
         if (bi === idx) {
+          const bx = startX + (bi % cols) * (sSize + sGap) - sSize / 2 - 4;
+          const by = startY + Math.floor(bi / cols) * (sSize + sGap) - sSize / 2 - 4;
           btn.fillStyle(0x8b5cf6, 0.25);
-          btn.fillRoundedRect(
-            startX + (bi % cols) * (sSize + sGap) - sSize / 2 - 4,
-            startY + Math.floor(bi / cols) * (sSize + sGap) - sSize / 2 - 4,
-            sSize + 8, sSize + 8, 10
-          );
+          btn.fillRoundedRect(bx, by, sSize + 8, sSize + 8, 10);
           btn.lineStyle(2, 0x7c3aed, 1);
-          btn.strokeRoundedRect(
-            startX + (bi % cols) * (sSize + sGap) - sSize / 2 - 4,
-            startY + Math.floor(bi / cols) * (sSize + sGap) - sSize / 2 - 4,
-            sSize + 8, sSize + 8, 10
-          );
+          btn.strokeRoundedRect(bx, by, sSize + 8, sSize + 8, 10);
         }
       });
     };
@@ -614,9 +690,7 @@ class StickerScene extends Phaser.Scene {
 
       const btn = this.add.graphics();
       stickerBtns.push(btn);
-
-      const label = this.add.text(sx, sy, emoji, { fontSize: "28px" }).setOrigin(0.5);
-      stickerZones.push(label);
+      this.add.text(sx, sy, emoji, { fontSize: "28px" }).setOrigin(0.5);
 
       const zone = this.add.zone(sx, sy, sSize, sSize).setInteractive({ useHandCursor: true });
       zone.on("pointerdown", () => {
@@ -625,75 +699,113 @@ class StickerScene extends Phaser.Scene {
       });
     });
 
-    // Tap on case to place sticker
-    const caseZone = this.add.zone(this.caseX, this.caseY, this.caseW, this.caseH)
-      .setInteractive({ useHandCursor: true });
-
-    caseZone.on("pointerdown", (p: Phaser.Input.Pointer) => {
+    // ── Case tap zone — full canvas, placement validated by isValidStickerPos ─
+    // We listen on the whole scene input so the player can tap anywhere and get
+    // feedback. Only valid positions (inside case, not on lens) place a sticker.
+    this.input.on("pointerdown", (p: Phaser.Input.Pointer) => {
       if (!selectedSticker) return;
 
-      // Keep within case bounds
-      const px = Phaser.Math.Clamp(p.x, this.caseX - this.caseW / 2 + 12, this.caseX + this.caseW / 2 - 12);
-      const py = Phaser.Math.Clamp(p.y, this.caseY - this.caseH / 2 + 12, this.caseY + this.caseH / 2 - 12);
+      // Ignore taps on the sticker tray (below startY - sSize/2 - 8)
+      if (p.y >= startY - sSize / 2 - 8) return;
 
-      const angle = Phaser.Math.Between(-20, 20);
-      const scale = 0.9 + Math.random() * 0.4;
+      const valid = isValidStickerPos(
+        p.x, p.y,
+        STICKER_CASE_X, STICKER_CASE_Y, STICKER_CASE_SCALE,
+        state.caseShape
+      );
 
-      const placed = this.add.text(px, py, selectedSticker, {
-        fontSize: "30px",
-      }).setOrigin(0.5).setAngle(angle).setScale(scale).setDepth(6);
+      if (!valid) {
+        // Show friendly "can't place here" shake
+        const geo = getCaseGeometry(STICKER_CASE_X, STICKER_CASE_Y, STICKER_CASE_SCALE);
+        const lensX = geo.lensX;
+        const lensY = geo.lensY;
+        const lensR = geo.lensR;
+        const dx = p.x - lensX;
+        const dy = p.y - lensY;
+        const onLens = dx * dx + dy * dy < (lensR + 8) * (lensR + 8);
+
+        const msg = onLens
+          ? "📷 Can't place on the camera!"
+          : "📱 Place stickers inside the case!";
+
+        this.noDropFeedback.setText(msg).setAlpha(1).setPosition(VW / 2, p.y - 30);
+        this.tweens.add({
+          targets: this.noDropFeedback,
+          alpha: 0,
+          y: p.y - 60,
+          duration: 900,
+          ease: "Quad.easeOut",
+        });
+
+        // Wobble the case
+        this.tweens.add({
+          targets: this.caseGfx,
+          x: -6, duration: 60, yoyo: true, repeat: 3,
+          onComplete: () => { this.caseGfx.x = 0; },
+        });
+        return;
+      }
+
+      const angle = Phaser.Math.Between(-18, 18);
+      const sc = 0.85 + Math.random() * 0.35;
+
+      const placed = this.add.text(p.x, p.y, selectedSticker, { fontSize: "28px" })
+        .setOrigin(0.5).setAngle(angle).setScale(sc * 1.5).setDepth(6);
 
       this.placedStickers.push(placed);
-      this.stickerData.push({ emoji: selectedSticker, x: px, y: py, scale, angle });
+      this.stickerData.push({ emoji: selectedSticker, x: p.x, y: p.y, scale: sc, angle });
 
-      // Pop animation
-      placed.setScale(scale * 1.4);
-      this.tweens.add({ targets: placed, scaleX: scale, scaleY: scale, duration: 200, ease: "Back.easeOut" });
+      // Pop-in animation
+      this.tweens.add({ targets: placed, scaleX: sc, scaleY: sc, duration: 220, ease: "Back.easeOut" });
     });
 
-    // Undo button
+    // ── Undo button ──────────────────────────────────────────────────────────
     const undoBg = this.add.graphics();
-    undoBg.fillStyle(0xe5e7eb, 1);
-    undoBg.fillRoundedRect(20, VH - 68, 80, 44, 22);
-    this.add.text(60, VH - 46, "↩ Undo", {
-      fontFamily: "Manrope, sans-serif", fontSize: "13px", color: "#374151", fontStyle: "bold",
+    const drawUndo = (hover: boolean) => {
+      undoBg.clear();
+      undoBg.fillStyle(hover ? 0x6b7280 : 0x9ca3af, 1);
+      undoBg.fillRoundedRect(16, VH - 72, 80, 40, 20);
+    };
+    drawUndo(false);
+    this.add.text(56, VH - 52, "↩ Undo", {
+      fontFamily: "Manrope, sans-serif", fontSize: "14px", color: "#ffffff", fontStyle: "bold",
     }).setOrigin(0.5);
-    const undoZone = this.add.zone(60, VH - 46, 80, 44).setInteractive({ useHandCursor: true });
+    const undoZone = this.add.zone(56, VH - 52, 88, 44).setInteractive({ useHandCursor: true });
+    undoZone.on("pointerover", () => drawUndo(true));
+    undoZone.on("pointerout", () => drawUndo(false));
     undoZone.on("pointerdown", () => {
       const last = this.placedStickers.pop();
       if (last) { last.destroy(); this.stickerData.pop(); }
     });
 
-    // Done button
-    const btnBg = this.add.graphics();
-    const drawBtn = (hover: boolean) => {
-      btnBg.clear();
-      btnBg.fillStyle(hover ? 0x6d28d9 : 0x7c3aed, 1);
-      btnBg.fillRoundedRect(VW / 2 + 10, VH - 68, 160, 44, 22);
-      btnBg.fillStyle(0xffffff, 0.15);
-      btnBg.fillRoundedRect(VW / 2 + 18, VH - 65, 144, 16, 11);
+    // ── Done button ──────────────────────────────────────────────────────────
+    const doneBg = this.add.graphics();
+    const drawDone = (hover: boolean) => {
+      doneBg.clear();
+      doneBg.fillStyle(hover ? 0x6d28d9 : 0x7c3aed, 1);
+      doneBg.fillRoundedRect(VW / 2 - 80, VH - 72, 160, 44, 22);
+      doneBg.fillStyle(0xffffff, 0.15);
+      doneBg.fillRoundedRect(VW / 2 - 72, VH - 69, 144, 17, 11);
     };
-    drawBtn(false);
-    const btnText = this.add.text(VW / 2 + 90, VH - 46, "I'm Done! 🎉", {
-      fontFamily: "Manrope, sans-serif", fontSize: "16px", color: "#ffffff", fontStyle: "bold",
+    drawDone(false);
+    const doneText = this.add.text(VW / 2, VH - 50, "Finish! 🎉", {
+      fontFamily: "Manrope, sans-serif", fontSize: "18px", color: "#ffffff", fontStyle: "bold",
     }).setOrigin(0.5);
-    const btnZone = this.add.zone(VW / 2 + 90, VH - 46, 170, 44).setInteractive({ useHandCursor: true });
-    btnZone.on("pointerover", () => drawBtn(true));
-    btnZone.on("pointerout", () => drawBtn(false));
-    btnZone.on("pointerdown", () => {
+    const doneZone = this.add.zone(VW / 2, VH - 50, 170, 48).setInteractive({ useHandCursor: true });
+    doneZone.on("pointerover", () => { drawDone(true); this.tweens.add({ targets: [doneBg, doneText], scaleX: 1.04, scaleY: 1.04, duration: 60, yoyo: true }); });
+    doneZone.on("pointerout", () => drawDone(false));
+    doneZone.on("pointerdown", () => {
       state.stickers = [...this.stickerData];
       this.cameras.main.fadeOut(300, 253, 244, 255);
       this.time.delayedCall(300, () => this.scene.start("finish"));
     });
-    void btnText;
-    void stickerZones;
 
     this.cameras.main.fadeIn(400, 253, 244, 255);
   }
 
   private redrawCase(): void {
     this.caseGfx.clear();
-    drawPhoneCase(this.caseGfx, this.caseX, this.caseY, state.paintColor, state.caseShape, 1.05);
+    drawPhoneCase(this.caseGfx, STICKER_CASE_X, STICKER_CASE_Y, state.paintColor, state.caseShape, STICKER_CASE_SCALE);
   }
 }
 
@@ -709,84 +821,80 @@ class FinishScene extends Phaser.Scene {
     bg.fillRect(0, 0, VW, VH);
 
     // Confetti
-    const confColors = [0xef4444, 0xf472b6, 0xfacc15, 0x22c55e, 0x3b82f6, 0x8b5cf6, 0xf97316];
-    for (let i = 0; i < 36; i++) {
+    for (let i = 0; i < 32; i++) {
       const cx = Phaser.Math.Between(10, VW - 10);
-      const cy = Phaser.Math.Between(-60, 0);
-      const cc = Phaser.Utils.Array.GetRandom(confColors) as number;
-      const conf = this.add.rectangle(cx, cy, Phaser.Math.Between(6, 14), Phaser.Math.Between(6, 14), cc);
+      const cy = Phaser.Math.Between(-40, VH * 0.4);
+      const confColor = Phaser.Utils.Array.GetRandom([
+        0xef4444, 0xf472b6, 0xfacc15, 0x22c55e, 0x3b82f6, 0x8b5cf6,
+      ]) as number;
+      const conf = this.add.rectangle(cx, cy, Phaser.Math.Between(6, 14), Phaser.Math.Between(6, 14), confColor);
       this.tweens.add({
         targets: conf,
-        y: cy + Phaser.Math.Between(500, 800),
-        x: cx + Phaser.Math.Between(-80, 80),
+        y: cy + Phaser.Math.Between(300, 700),
+        x: cx + Phaser.Math.Between(-60, 60),
         angle: Phaser.Math.Between(-360, 360),
         alpha: 0,
-        duration: Phaser.Math.Between(1800, 3200),
-        delay: Phaser.Math.Between(0, 1200),
+        duration: Phaser.Math.Between(1500, 3000),
+        delay: Phaser.Math.Between(0, 1000),
         repeat: -1,
         onRepeat: () => {
+          conf.y = Phaser.Math.Between(-40, -10);
           conf.x = Phaser.Math.Between(10, VW - 10);
-          conf.y = Phaser.Math.Between(-60, 0);
           conf.alpha = 1;
         },
       });
     }
 
-    this.add.text(VW / 2, 52, "🎉 Your Case is Done!", {
-      fontFamily: "Fraunces, serif", fontSize: "30px", color: "#be185d",
-      align: "center", wordWrap: { width: VW - 40 },
+    this.add.text(VW / 2, 52, "🎉 Amazing!", {
+      fontFamily: "Fraunces, serif", fontSize: "40px", color: "#be185d",
     }).setOrigin(0.5);
-    this.add.text(VW / 2, 96, "What an amazing design!", {
-      fontFamily: "Manrope, sans-serif", fontSize: "16px", color: "#7c3aed",
+    this.add.text(VW / 2, 102, "Your phone case is ready!", {
+      fontFamily: "Manrope, sans-serif", fontSize: "17px", color: "#7c3aed",
     }).setOrigin(0.5);
 
-    // Show finished phone case
-    const caseGfx = this.add.graphics();
-    drawPhoneCase(caseGfx, VW / 2, 300, state.paintColor, state.caseShape, 1.1);
+    // Finished case
+    const caseGfx = this.add.graphics().setDepth(1);
+    drawPhoneCase(caseGfx, VW / 2, 310, state.paintColor, state.caseShape, 1.15);
 
-    // Place stickers on the finished case
+    // Re-draw stickers on the finished case
+    const geo = getCaseGeometry(VW / 2, 310, 1.15);
+    const scaleRatio = 1.15 / STICKER_CASE_SCALE;
     for (const s of state.stickers) {
-      this.add.text(s.x, s.y - 20, s.emoji, { fontSize: "30px" })
+      // Map sticker position from sticker scene coords to finish scene coords
+      const dx = s.x - STICKER_CASE_X;
+      const dy = s.y - STICKER_CASE_Y;
+      const fx = VW / 2 + dx * scaleRatio;
+      const fy = 310 + dy * scaleRatio;
+      // Keep within case bounds
+      const clampedX = Phaser.Math.Clamp(fx, geo.x + 10, geo.x + geo.w - 10);
+      const clampedY = Phaser.Math.Clamp(fy, geo.y + 10, geo.y + geo.h - 10);
+      this.add.text(clampedX, clampedY, s.emoji, { fontSize: "28px" })
         .setOrigin(0.5).setAngle(s.angle).setScale(s.scale).setDepth(6);
     }
 
-    // Floating stars
-    for (let i = 0; i < 6; i++) {
-      const star = this.add.text(
-        Phaser.Math.Between(30, VW - 30),
-        Phaser.Math.Between(420, 560),
-        Phaser.Utils.Array.GetRandom(["⭐", "💫", "✨", "🌟"]) as string,
-        { fontSize: "24px" }
-      ).setOrigin(0.5).setAlpha(0);
-      this.tweens.add({
-        targets: star, alpha: 1, y: star.y - 20,
-        duration: 600, delay: 300 + i * 150, yoyo: true, repeat: -1,
-      });
-    }
-
-    // Make Another button
+    // Play again button
     const btnBg = this.add.graphics();
     const drawBtn = (hover: boolean) => {
       btnBg.clear();
       btnBg.fillStyle(hover ? 0x9d174d : 0xbe185d, 1);
-      btnBg.fillRoundedRect(VW / 2 - 110, VH - 100, 220, 56, 28);
+      btnBg.fillRoundedRect(VW / 2 - 100, VH - 100, 200, 54, 27);
       btnBg.fillStyle(0xffffff, 0.15);
-      btnBg.fillRoundedRect(VW / 2 - 102, VH - 97, 204, 22, 14);
+      btnBg.fillRoundedRect(VW / 2 - 92, VH - 97, 184, 21, 14);
     };
     drawBtn(false);
-    const btnText = this.add.text(VW / 2, VH - 72, "🔄  Make Another!", {
-      fontFamily: "Manrope, sans-serif", fontSize: "20px", color: "#ffffff", fontStyle: "bold",
+    const btnText = this.add.text(VW / 2, VH - 73, "🎨 Make Another!", {
+      fontFamily: "Manrope, sans-serif", fontSize: "19px", color: "#ffffff", fontStyle: "bold",
     }).setOrigin(0.5);
-    const btnZone = this.add.zone(VW / 2, VH - 72, 240, 60).setInteractive({ useHandCursor: true });
-    btnZone.on("pointerover", () => { drawBtn(true); this.tweens.add({ targets: [btnBg, btnText], scaleX: 1.05, scaleY: 1.05, duration: 80, yoyo: true }); });
+    const btnZone = this.add.zone(VW / 2, VH - 73, 220, 58).setInteractive({ useHandCursor: true });
+    btnZone.on("pointerover", () => { drawBtn(true); this.tweens.add({ targets: [btnBg, btnText], scaleX: 1.04, scaleY: 1.04, duration: 60, yoyo: true }); });
     btnZone.on("pointerout", () => drawBtn(false));
     btnZone.on("pointerdown", () => {
       state.stickers = [];
-      this.cameras.main.fadeOut(300, 253, 242, 248);
+      this.cameras.main.fadeOut(300, 252, 231, 243);
       this.time.delayedCall(300, () => this.scene.start("menu"));
     });
 
-    this.cameras.main.fadeIn(500, 253, 242, 248);
+    this.cameras.main.fadeIn(400, 253, 244, 255);
   }
 }
 
