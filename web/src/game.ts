@@ -1,838 +1,916 @@
 import Phaser from "phaser";
 
-// ─── Virtual canvas size ────────────────────────────────────────────────────
-const VW = 480;
-const VH = 720;
+// ─── Virtual canvas ───────────────────────────────────────────────────────────
+const VW = 390;
+const VH = 680;
 
-// ─── Sticker / decoration data ──────────────────────────────────────────────
-interface StickerDef {
-  emoji: string;
-  label: string;
+// ─── Shared state passed between scenes ──────────────────────────────────────
+interface GameState {
+  caseShape: "rounded" | "square" | "bumper";
+  paintColor: number;
+  onScore: (n: number) => void;
 }
 
-const STICKERS: StickerDef[] = [
-  { emoji: "⭐", label: "star" },
-  { emoji: "🌈", label: "rainbow" },
-  { emoji: "🦋", label: "butterfly" },
-  { emoji: "🌸", label: "flower" },
-  { emoji: "💎", label: "gem" },
-  { emoji: "🍭", label: "lollipop" },
-  { emoji: "🌙", label: "moon" },
-  { emoji: "🦄", label: "unicorn" },
-  { emoji: "🎀", label: "bow" },
-  { emoji: "🍀", label: "clover" },
-  { emoji: "🔥", label: "fire" },
-  { emoji: "❤️", label: "heart" },
-];
-
-// Case background color palette (pastel + bright)
-const CASE_COLORS = [
-  0xfce7f3, // pink
-  0xfef9c3, // yellow
-  0xdbeafe, // blue
-  0xdcfce7, // green
-  0xf3e8ff, // purple
-  0xffedd5, // orange
-  0xe0f2fe, // sky
-  0xfff1f2, // rose
-  0xf0fdf4, // mint
-  0xfdf4ff, // lavender
-];
-
-// Pattern types
-type PatternType = "none" | "dots" | "stripes" | "stars" | "hearts" | "zigzag";
-const PATTERNS: PatternType[] = ["none", "dots", "stripes", "stars", "hearts", "zigzag"];
-const PATTERN_LABELS: Record<PatternType, string> = {
-  none: "Plain",
-  dots: "Dots",
-  stripes: "Stripes",
-  stars: "Stars",
-  hearts: "Hearts",
-  zigzag: "Zigzag",
+const state: GameState = {
+  caseShape: "rounded",
+  paintColor: 0xffffff,
+  onScore: () => {},
 };
 
-// ─── Utility: draw a rounded rectangle path ─────────────────────────────────
-function roundedRectPath(
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+function drawPhoneCase(
   gfx: Phaser.GameObjects.Graphics,
-  x: number,
-  y: number,
-  w: number,
-  h: number,
-  r: number
+  cx: number,
+  cy: number,
+  color: number,
+  shape: GameState["caseShape"],
+  scale = 1,
+  dirty = false
 ): void {
-  gfx.beginPath();
-  gfx.moveTo(x + r, y);
-  gfx.lineTo(x + w - r, y);
-  gfx.arc(x + w - r, y + r, r, -Math.PI / 2, 0);
-  gfx.lineTo(x + w, y + h - r);
-  gfx.arc(x + w - r, y + h - r, r, 0, Math.PI / 2);
-  gfx.lineTo(x + r, y + h);
-  gfx.arc(x + r, y + h - r, r, Math.PI / 2, Math.PI);
-  gfx.lineTo(x, y + r);
-  gfx.arc(x + r, y + r, r, Math.PI, (3 * Math.PI) / 2);
-  gfx.closePath();
-}
+  const w = 110 * scale;
+  const h = 190 * scale;
+  const x = cx - w / 2;
+  const y = cy - h / 2;
 
-// ─── Main Play Scene ─────────────────────────────────────────────────────────
-class PhoneCaseScene extends Phaser.Scene {
-  private readonly onScore: (n: number) => void;
+  // Shadow
+  gfx.fillStyle(0x000000, 0.18);
+  gfx.fillRoundedRect(x + 6, y + 8, w, h, shape === "square" ? 6 : 28 * scale);
 
-  // Case dimensions / position
-  private readonly caseX = VW / 2;
-  private readonly caseY = 310;
-  private readonly caseW = 200;
-  private readonly caseH = 360;
-  private readonly caseR = 28;
-
-  // State
-  private colorIndex = 0;
-  private patternIndex = 0;
-  private placedStickers: { x: number; y: number; emoji: string; obj: Phaser.GameObjects.Text }[] = [];
-  private selectedSticker: StickerDef | null = null;
-  private score = 0;
-  private done = false;
-
-  // Graphics layers
-  private caseGraphics!: Phaser.GameObjects.Graphics;
-  private patternGraphics!: Phaser.GameObjects.Graphics;
-  private caseOutline!: Phaser.GameObjects.Graphics;
-  private glareGraphics!: Phaser.GameObjects.Graphics;
-
-  // UI elements
-  private colorButtons: Phaser.GameObjects.Container[] = [];
-  private patternButtons: Phaser.GameObjects.Container[] = [];
-  private stickerButtons: Phaser.GameObjects.Container[] = [];
-  private selectedHighlight!: Phaser.GameObjects.Rectangle;
-  private selectedLabel!: Phaser.GameObjects.Text;
-  private doneButton!: Phaser.GameObjects.Container;
-  private clearButton!: Phaser.GameObjects.Container;
-  private scoreDisplay!: Phaser.GameObjects.Text;
-  private stickerCountText!: Phaser.GameObjects.Text;
-  private caseHitZone!: Phaser.GameObjects.Zone;
-
-  constructor(onScore: (n: number) => void) {
-    super("phone-case");
-    this.onScore = onScore;
+  // Case body
+  if (dirty) {
+    gfx.fillStyle(0xb0b0b0, 1);
+  } else {
+    gfx.fillStyle(color, 1);
   }
 
-  preload(): void {
-    // Nothing to load — we use Phaser graphics + emoji text for everything
+  const r = shape === "square" ? 6 : shape === "bumper" ? 36 * scale : 28 * scale;
+  gfx.fillRoundedRect(x, y, w, h, r);
+
+  // Shine highlight
+  gfx.fillStyle(0xffffff, 0.18);
+  gfx.fillRoundedRect(x + 8 * scale, y + 10 * scale, 18 * scale, 60 * scale, 9 * scale);
+
+  // Camera cutout
+  gfx.fillStyle(0x1a1a2e, 1);
+  gfx.fillCircle(cx - 14 * scale, y + 26 * scale, 10 * scale);
+  gfx.fillStyle(0x3b82f6, 0.6);
+  gfx.fillCircle(cx - 14 * scale, y + 26 * scale, 6 * scale);
+
+  // Side buttons
+  gfx.fillStyle(0x888888, 1);
+  gfx.fillRoundedRect(x + w - 2, y + 55 * scale, 5, 28 * scale, 2);
+  gfx.fillRoundedRect(x + w - 2, y + 90 * scale, 5, 18 * scale, 2);
+  gfx.fillRoundedRect(x - 3, y + 70 * scale, 5, 22 * scale, 2);
+
+  // Dirt patches if dirty
+  if (dirty) {
+    gfx.fillStyle(0x8b6914, 0.45);
+    gfx.fillEllipse(cx + 10, cy - 20, 38, 22);
+    gfx.fillEllipse(cx - 20, cy + 30, 28, 18);
+    gfx.fillEllipse(cx + 25, cy + 50, 32, 16);
+    gfx.fillStyle(0x5a3e1b, 0.3);
+    gfx.fillEllipse(cx - 5, cy + 10, 20, 14);
+    gfx.fillEllipse(cx + 30, cy - 40, 18, 12);
+  }
+}
+
+// ─── SCENE 1: Menu ────────────────────────────────────────────────────────────
+class MenuScene extends Phaser.Scene {
+  constructor() {
+    super("menu");
   }
 
   create(): void {
-    this.done = false;
-    this.score = 0;
-    this.placedStickers = [];
-    this.selectedSticker = null;
-    this.colorIndex = 0;
-    this.patternIndex = 0;
-    this.onScore(0);
-
-    // ── Background ──────────────────────────────────────────────────────────
+    // Gradient background
     const bg = this.add.graphics();
-    bg.fillGradientStyle(0xfdf2f8, 0xfdf2f8, 0xf0f9ff, 0xf0f9ff, 1);
+    bg.fillGradientStyle(0xfce7f3, 0xfce7f3, 0xfdf2f8, 0xfdf2f8, 1);
     bg.fillRect(0, 0, VW, VH);
 
-    // Decorative background circles
-    const bgDeco = this.add.graphics();
-    bgDeco.fillStyle(0xfce7f3, 0.4);
-    bgDeco.fillCircle(60, 80, 70);
-    bgDeco.fillStyle(0xdbeafe, 0.4);
-    bgDeco.fillCircle(VW - 50, 120, 55);
-    bgDeco.fillStyle(0xfef9c3, 0.4);
-    bgDeco.fillCircle(40, VH - 100, 60);
-    bgDeco.fillStyle(0xdcfce7, 0.4);
-    bgDeco.fillCircle(VW - 60, VH - 80, 50);
-
-    // ── Title ───────────────────────────────────────────────────────────────
-    this.add.text(VW / 2, 22, "📱 Phone Case DIY", {
-      fontFamily: "Fraunces, serif",
-      fontSize: "26px",
-      color: "#be185d",
-      stroke: "#fce7f3",
-      strokeThickness: 3,
-    }).setOrigin(0.5, 0);
-
-    // ── Phone Case layers ───────────────────────────────────────────────────
-    const cx = this.caseX - this.caseW / 2;
-    const cy = this.caseY - this.caseH / 2;
-
-    // Shadow
-    const shadow = this.add.graphics();
-    shadow.fillStyle(0x000000, 0.12);
-    roundedRectPath(shadow, cx + 6, cy + 8, this.caseW, this.caseH, this.caseR);
-    shadow.fillPath();
-
-    // Case base (color fill)
-    this.caseGraphics = this.add.graphics();
-
-    // Pattern layer
-    this.patternGraphics = this.add.graphics();
-    this.patternGraphics.setMask(this.createCaseMask());
-
-    // Case outline
-    this.caseOutline = this.add.graphics();
-
-    // Glare overlay
-    this.glareGraphics = this.add.graphics();
-
-    // Draw initial case
-    this.redrawCase();
-
-    // Phone screen (inner rectangle)
-    const screenGfx = this.add.graphics();
-    const sw = this.caseW - 24;
-    const sh = this.caseH - 80;
-    const sx = cx + 12;
-    const sy = cy + 50;
-    screenGfx.fillStyle(0x1e293b, 0.85);
-    roundedRectPath(screenGfx, sx, sy, sw, sh, 14);
-    screenGfx.fillPath();
-    // Screen shine
-    screenGfx.fillStyle(0xffffff, 0.06);
-    screenGfx.fillRect(sx + 6, sy + 6, sw - 12, sh / 3);
-    // Screen time text
-    this.add.text(this.caseX, cy + 50 + sh / 2 - 30, "12:00", {
-      fontFamily: "Manrope, sans-serif",
-      fontSize: "28px",
-      color: "#ffffff",
-      alpha: 0.7,
-    }).setOrigin(0.5, 0.5).setAlpha(0.6);
-    this.add.text(this.caseX, cy + 50 + sh / 2 + 10, "Fri, Jan 10", {
-      fontFamily: "Manrope, sans-serif",
-      fontSize: "13px",
-      color: "#ffffff",
-    }).setOrigin(0.5, 0.5).setAlpha(0.45);
-
-    // Camera notch
-    const notch = this.add.graphics();
-    notch.fillStyle(0x0f172a, 1);
-    notch.fillRoundedRect(this.caseX - 22, cy + 16, 44, 18, 9);
-    notch.fillStyle(0x334155, 1);
-    notch.fillCircle(this.caseX + 8, cy + 25, 5);
-    notch.fillStyle(0x1e40af, 0.6);
-    notch.fillCircle(this.caseX + 8, cy + 25, 3);
-
-    // Home button
-    const home = this.add.graphics();
-    home.fillStyle(0xe2e8f0, 0.5);
-    home.fillCircle(this.caseX, cy + this.caseH - 18, 10);
-    home.strokeCircle(this.caseX, cy + this.caseH - 18, 10);
-
-    // ── Hit zone for sticker placement ─────────────────────────────────────
-    this.caseHitZone = this.add.zone(this.caseX, this.caseY, this.caseW, this.caseH)
-      .setInteractive({ useHandCursor: true });
-    this.caseHitZone.on("pointerdown", (ptr: Phaser.Input.Pointer) => {
-      this.onCaseTap(ptr.x, ptr.y);
-    });
-
-    // ── Score display ───────────────────────────────────────────────────────
-    this.scoreDisplay = this.add.text(VW / 2, 56, "Design your case! 🎨", {
-      fontFamily: "Manrope, sans-serif",
-      fontSize: "14px",
-      color: "#6b21a8",
-    }).setOrigin(0.5, 0);
-
-    this.stickerCountText = this.add.text(VW / 2, 74, "", {
-      fontFamily: "Manrope, sans-serif",
-      fontSize: "12px",
-      color: "#9333ea",
-    }).setOrigin(0.5, 0);
-
-    // ── UI Panels ───────────────────────────────────────────────────────────
-    this.buildColorPanel();
-    this.buildPatternPanel();
-    this.buildStickerPanel();
-    this.buildActionButtons();
-
-    // ── Selected sticker indicator ──────────────────────────────────────────
-    this.selectedHighlight = this.add.rectangle(VW / 2, VH - 52, 120, 30, 0xfce7f3, 1)
-      .setStrokeStyle(2, 0xec4899)
-      .setVisible(false);
-    this.selectedLabel = this.add.text(VW / 2, VH - 52, "", {
-      fontFamily: "Manrope, sans-serif",
-      fontSize: "12px",
-      color: "#be185d",
-    }).setOrigin(0.5, 0.5).setVisible(false);
-  }
-
-  // ── Create a mask shaped like the phone case ─────────────────────────────
-  private createCaseMask(): Phaser.Display.Masks.GeometryMask {
-    const maskGfx = this.make.graphics({ x: 0, y: 0 });
-    const cx = this.caseX - this.caseW / 2;
-    const cy = this.caseY - this.caseH / 2;
-    maskGfx.fillStyle(0xffffff, 1);
-    roundedRectPath(maskGfx, cx, cy, this.caseW, this.caseH, this.caseR);
-    maskGfx.fillPath();
-    return maskGfx.createGeometryMask();
-  }
-
-  // ── Redraw the case fill + pattern + outline ─────────────────────────────
-  private redrawCase(): void {
-    const cx = this.caseX - this.caseW / 2;
-    const cy = this.caseY - this.caseH / 2;
-    const color = CASE_COLORS[this.colorIndex] ?? 0xfce7f3;
-
-    // Base fill
-    this.caseGraphics.clear();
-    this.caseGraphics.fillStyle(color, 1);
-    roundedRectPath(this.caseGraphics, cx, cy, this.caseW, this.caseH, this.caseR);
-    this.caseGraphics.fillPath();
-
-    // Pattern
-    this.patternGraphics.clear();
-    this.drawPattern(this.patternGraphics, cx, cy, this.caseW, this.caseH, color);
-
-    // Outline
-    this.caseOutline.clear();
-    this.caseOutline.lineStyle(4, 0xd1d5db, 1);
-    roundedRectPath(this.caseOutline, cx, cy, this.caseW, this.caseH, this.caseR);
-    this.caseOutline.strokePath();
-    // Inner highlight ring
-    this.caseOutline.lineStyle(2, 0xffffff, 0.6);
-    roundedRectPath(this.caseOutline, cx + 4, cy + 4, this.caseW - 8, this.caseH - 8, this.caseR - 3);
-    this.caseOutline.strokePath();
-
-    // Glare
-    this.glareGraphics.clear();
-    this.glareGraphics.fillStyle(0xffffff, 0.18);
-    this.glareGraphics.fillTriangle(cx + 20, cy + 10, cx + 80, cy + 10, cx + 20, cy + 90);
-  }
-
-  // ── Draw background pattern onto the case ────────────────────────────────
-  private drawPattern(
-    gfx: Phaser.GameObjects.Graphics,
-    cx: number,
-    cy: number,
-    w: number,
-    h: number,
-    baseColor: number
-  ): void {
-    const pattern = PATTERNS[this.patternIndex] ?? "none";
-    if (pattern === "none") return;
-
-    // Darken the base color slightly for the pattern
-    const r = ((baseColor >> 16) & 0xff);
-    const g = ((baseColor >> 8) & 0xff);
-    const b = (baseColor & 0xff);
-    const dr = Math.max(0, r - 40);
-    const dg = Math.max(0, g - 40);
-    const db = Math.max(0, b - 40);
-    const patColor = (dr << 16) | (dg << 8) | db;
-    gfx.fillStyle(patColor, 0.35);
-
-    if (pattern === "dots") {
-      const spacing = 22;
-      for (let px = cx + spacing / 2; px < cx + w; px += spacing) {
-        for (let py = cy + spacing / 2; py < cy + h; py += spacing) {
-          gfx.fillCircle(px, py, 4);
-        }
-      }
-    } else if (pattern === "stripes") {
-      const stripeW = 14;
-      for (let px = cx - h; px < cx + w + h; px += stripeW * 2) {
-        gfx.fillRect(px, cy, stripeW, h);
-      }
-    } else if (pattern === "stars") {
-      const spacing = 30;
-      for (let px = cx + spacing / 2; px < cx + w; px += spacing) {
-        for (let py = cy + spacing / 2; py < cy + h; py += spacing) {
-          this.drawStar(gfx, px, py, 5, 8, 4);
-        }
-      }
-    } else if (pattern === "hearts") {
-      const spacing = 32;
-      for (let px = cx + spacing / 2; px < cx + w; px += spacing) {
-        for (let py = cy + spacing / 2; py < cy + h; py += spacing) {
-          this.drawHeart(gfx, px, py, 7);
-        }
-      }
-    } else if (pattern === "zigzag") {
-      const zigH = 16;
-      const zigW = 20;
-      gfx.lineStyle(3, patColor, 0.4);
-      for (let row = 0; row * zigH < h + zigH; row++) {
-        gfx.beginPath();
-        let px = cx;
-        const py = cy + row * zigH;
-        gfx.moveTo(px, py);
-        let up = true;
-        while (px < cx + w + zigW) {
-          gfx.lineTo(px + zigW / 2, up ? py - zigH / 2 : py + zigH / 2);
-          px += zigW / 2;
-          up = !up;
-        }
-        gfx.strokePath();
-      }
+    // Floating bubbles decoration
+    for (let i = 0; i < 12; i++) {
+      const bx = Phaser.Math.Between(20, VW - 20);
+      const by = Phaser.Math.Between(20, VH - 20);
+      const br = Phaser.Math.Between(8, 22);
+      const bc = Phaser.Utils.Array.GetRandom([
+        0xf9a8d4, 0xfbcfe8, 0xc4b5fd, 0xa5f3fc, 0xfde68a,
+      ]) as number;
+      const bubble = this.add.circle(bx, by, br, bc, 0.35);
+      this.tweens.add({
+        targets: bubble,
+        y: by - Phaser.Math.Between(30, 60),
+        alpha: 0,
+        duration: Phaser.Math.Between(2000, 4000),
+        delay: Phaser.Math.Between(0, 2000),
+        repeat: -1,
+        yoyo: false,
+        onRepeat: () => {
+          bubble.y = by;
+          bubble.alpha = 0.35;
+        },
+      });
     }
-  }
 
-  private drawStar(
-    gfx: Phaser.GameObjects.Graphics,
-    cx: number,
-    cy: number,
-    points: number,
-    outerR: number,
-    innerR: number
-  ): void {
-    const step = Math.PI / points;
-    gfx.beginPath();
-    for (let i = 0; i < points * 2; i++) {
-      const r = i % 2 === 0 ? outerR : innerR;
-      const angle = i * step - Math.PI / 2;
-      const x = cx + Math.cos(angle) * r;
-      const y = cy + Math.sin(angle) * r;
-      if (i === 0) gfx.moveTo(x, y);
-      else gfx.lineTo(x, y);
-    }
-    gfx.closePath();
-    gfx.fillPath();
-  }
+    // Title
+    this.add
+      .text(VW / 2, 120, "📱", { fontSize: "72px" })
+      .setOrigin(0.5);
 
-  private drawHeart(gfx: Phaser.GameObjects.Graphics, cx: number, cy: number, size: number): void {
-    gfx.beginPath();
-    gfx.moveTo(cx, cy + size * 0.3);
-    gfx.arc(cx - size * 0.5, cy - size * 0.1, size * 0.5, Math.PI * 0.1, Math.PI, true);
-    gfx.arc(cx + size * 0.5, cy - size * 0.1, size * 0.5, 0, Math.PI * 0.9, false);
-    gfx.lineTo(cx, cy + size);
-    gfx.closePath();
-    gfx.fillPath();
-  }
+    this.add
+      .text(VW / 2, 210, "Phone Case", {
+        fontFamily: "Fraunces, serif",
+        fontSize: "42px",
+        color: "#be185d",
+        stroke: "#fce7f3",
+        strokeThickness: 4,
+      })
+      .setOrigin(0.5);
 
-  // ── Build color picker row ────────────────────────────────────────────────
-  private buildColorPanel(): void {
-    const panelY = 660;
-    const startX = VW / 2 - (CASE_COLORS.length * 26) / 2 + 10;
+    this.add
+      .text(VW / 2, 260, "DIY Studio", {
+        fontFamily: "Fraunces, serif",
+        fontSize: "42px",
+        color: "#7c3aed",
+        stroke: "#fdf2f8",
+        strokeThickness: 4,
+      })
+      .setOrigin(0.5);
 
-    this.add.text(12, panelY - 14, "Color", {
-      fontFamily: "Manrope, sans-serif",
-      fontSize: "11px",
-      color: "#9333ea",
-    }).setOrigin(0, 0.5);
-
-    CASE_COLORS.forEach((col, i) => {
-      const bx = startX + i * 26;
-      const circle = this.add.graphics();
-      circle.fillStyle(col, 1);
-      circle.fillCircle(0, 0, 11);
-      circle.lineStyle(2, 0xd1d5db, 1);
-      circle.strokeCircle(0, 0, 11);
-
-      const hit = this.add.circle(0, 0, 14, 0xffffff, 0).setInteractive({ useHandCursor: true });
-      const ring = this.add.graphics();
-      if (i === 0) {
-        ring.lineStyle(3, 0xec4899, 1);
-        ring.strokeCircle(0, 0, 14);
-      }
-
-      const container = this.add.container(bx, panelY, [circle, hit, ring]);
-      hit.on("pointerdown", () => this.selectColor(i));
-      hit.on("pointerover", () => { if (this.colorIndex !== i) circle.setAlpha(0.8); });
-      hit.on("pointerout", () => circle.setAlpha(1));
-      this.colorButtons.push(container);
-    });
-  }
-
-  private selectColor(index: number): void {
-    this.colorIndex = index;
-    this.colorButtons.forEach((btn, i) => {
-      const ring = btn.getAt(2) as Phaser.GameObjects.Graphics;
-      ring.clear();
-      if (i === index) {
-        ring.lineStyle(3, 0xec4899, 1);
-        ring.strokeCircle(0, 0, 14);
-      }
-    });
-    this.redrawCase();
-    this.tweens.add({
-      targets: this.caseGraphics,
-      alpha: { from: 0.5, to: 1 },
-      duration: 200,
-      ease: "Quad.easeOut",
-    });
-  }
-
-  // ── Build pattern picker row ──────────────────────────────────────────────
-  private buildPatternPanel(): void {
-    const panelY = 698;
-    const totalW = PATTERNS.length * 54 + 8;
-    const startX = VW / 2 - totalW / 2 + 22;
-
-    this.add.text(12, panelY - 2, "Pattern", {
-      fontFamily: "Manrope, sans-serif",
-      fontSize: "11px",
-      color: "#9333ea",
-    }).setOrigin(0, 0.5);
-
-    PATTERNS.forEach((pat, i) => {
-      const bx = startX + i * 54;
-      const bg = this.add.rectangle(0, 0, 46, 24, i === 0 ? 0xec4899 : 0xe2e8f0, 1)
-        .setStrokeStyle(1.5, i === 0 ? 0xbe185d : 0xd1d5db);
-      const label = this.add.text(0, 0, PATTERN_LABELS[pat], {
+    this.add
+      .text(VW / 2, 320, "Design your perfect case!", {
         fontFamily: "Manrope, sans-serif",
-        fontSize: "10px",
-        color: i === 0 ? "#ffffff" : "#6b7280",
-      }).setOrigin(0.5, 0.5);
-      const hit = this.add.rectangle(0, 0, 46, 24, 0xffffff, 0).setInteractive({ useHandCursor: true });
-      const container = this.add.container(bx, panelY, [bg, label, hit]);
-      hit.on("pointerdown", () => this.selectPattern(i));
-      this.patternButtons.push(container);
-    });
-  }
+        fontSize: "17px",
+        color: "#9d174d",
+      })
+      .setOrigin(0.5);
 
-  private selectPattern(index: number): void {
-    this.patternIndex = index;
-    this.patternButtons.forEach((btn, i) => {
-      const bg = btn.getAt(0) as Phaser.GameObjects.Rectangle;
-      const lbl = btn.getAt(1) as Phaser.GameObjects.Text;
-      if (i === index) {
-        bg.setFillStyle(0xec4899).setStrokeStyle(1.5, 0xbe185d);
-        lbl.setColor("#ffffff");
-      } else {
-        bg.setFillStyle(0xe2e8f0).setStrokeStyle(1.5, 0xd1d5db);
-        lbl.setColor("#6b7280");
-      }
-    });
-    this.redrawCase();
-  }
+    // Preview phone case
+    const previewGfx = this.add.graphics();
+    drawPhoneCase(previewGfx, VW / 2, 440, 0xf472b6, "rounded", 0.85);
 
-  // ── Build sticker tray ────────────────────────────────────────────────────
-  private buildStickerPanel(): void {
-    const trayY = 618;
-    const cols = 6;
-    const cellSize = 48;
-    const totalW = cols * cellSize;
-    const startX = VW / 2 - totalW / 2 + cellSize / 2;
-
-    // Tray background
-    const trayBg = this.add.graphics();
-    trayBg.fillStyle(0xffffff, 0.7);
-    trayBg.fillRoundedRect(VW / 2 - totalW / 2 - 8, trayY - 30, totalW + 16, 60, 14);
-    trayBg.lineStyle(1.5, 0xfce7f3, 1);
-    trayBg.strokeRoundedRect(VW / 2 - totalW / 2 - 8, trayY - 30, totalW + 16, 60, 14);
-
-    this.add.text(VW / 2 - totalW / 2 - 4, trayY - 42, "Stickers — tap one, then tap the case!", {
-      fontFamily: "Manrope, sans-serif",
-      fontSize: "11px",
-      color: "#9333ea",
-    }).setOrigin(0, 0.5);
-
-    STICKERS.forEach((sticker, i) => {
-      const row = Math.floor(i / cols);
-      const col = i % cols;
-      const bx = startX + col * cellSize;
-      const by = trayY - 6 + row * cellSize;
-
-      const bg = this.add.rectangle(0, 0, 40, 40, 0xfdf4ff, 1)
-        .setStrokeStyle(1.5, 0xe9d5ff);
-      const emoji = this.add.text(0, 0, sticker.emoji, { fontSize: "22px" }).setOrigin(0.5, 0.5);
-      const hit = this.add.rectangle(0, 0, 44, 44, 0xffffff, 0).setInteractive({ useHandCursor: true });
-
-      const container = this.add.container(bx, by, [bg, emoji, hit]);
-      hit.on("pointerdown", () => this.selectSticker(i));
-      hit.on("pointerover", () => { bg.setFillStyle(0xf3e8ff); });
-      hit.on("pointerout", () => { if (this.selectedSticker !== sticker) bg.setFillStyle(0xfdf4ff); });
-      this.stickerButtons.push(container);
-    });
-  }
-
-  private selectSticker(index: number): void {
-    const sticker = STICKERS[index];
-    if (!sticker) return;
-
-    this.selectedSticker = sticker;
-    this.stickerButtons.forEach((btn, i) => {
-      const bg = btn.getAt(0) as Phaser.GameObjects.Rectangle;
-      if (i === index) {
-        bg.setFillStyle(0xfce7f3).setStrokeStyle(2.5, 0xec4899);
-      } else {
-        bg.setFillStyle(0xfdf4ff).setStrokeStyle(1.5, 0xe9d5ff);
-      }
-    });
-
-    this.selectedHighlight.setVisible(true);
-    this.selectedLabel.setText(`${sticker.emoji} selected — tap the case!`).setVisible(true);
-  }
-
-  // ── Handle tap on the case ────────────────────────────────────────────────
-  private onCaseTap(worldX: number, worldY: number): void {
-    if (this.done) return;
-    if (!this.selectedSticker) {
-      // Bounce hint
-      this.tweens.add({
-        targets: this.selectedHighlight,
-        scaleX: { from: 1, to: 1.1 },
-        scaleY: { from: 1, to: 1.1 },
-        duration: 120,
-        yoyo: true,
-      });
-      return;
-    }
-
-    // Check within case bounds
-    const cx = this.caseX - this.caseW / 2;
-    const cy = this.caseY - this.caseH / 2;
-    if (
-      worldX < cx + 10 || worldX > cx + this.caseW - 10 ||
-      worldY < cy + 10 || worldY > cy + this.caseH - 10
-    ) return;
-
-    // Place sticker emoji on case
-    const emoji = this.selectedSticker.emoji;
-    const stickerText = this.add.text(worldX, worldY, emoji, {
-      fontSize: "28px",
-    }).setOrigin(0.5, 0.5).setDepth(10);
-
-    // Pop-in animation
-    stickerText.setScale(0);
+    // Bounce the preview
     this.tweens.add({
-      targets: stickerText,
-      scale: { from: 0, to: 1 },
-      duration: 250,
-      ease: "Back.easeOut",
+      targets: previewGfx,
+      y: -6,
+      duration: 1200,
+      yoyo: true,
+      repeat: -1,
+      ease: "Sine.easeInOut",
     });
 
-    this.placedStickers.push({ x: worldX, y: worldY, emoji, obj: stickerText });
+    // Start button
+    const btnBg = this.add.graphics();
+    btnBg.fillStyle(0xbe185d, 1);
+    btnBg.fillRoundedRect(VW / 2 - 90, VH - 110, 180, 56, 28);
+    btnBg.fillStyle(0xffffff, 0.15);
+    btnBg.fillRoundedRect(VW / 2 - 82, VH - 107, 164, 22, 14);
 
-    // Score per sticker
-    const pts = 10;
-    this.score += pts;
-    this.onScore(this.score);
-    this.updateStickerCount();
+    const btnText = this.add
+      .text(VW / 2, VH - 82, "✨  Let's Start!", {
+        fontFamily: "Manrope, sans-serif",
+        fontSize: "20px",
+        color: "#ffffff",
+        fontStyle: "bold",
+      })
+      .setOrigin(0.5);
 
-    // Floating score pop
-    const pop = this.add.text(worldX, worldY - 20, `+${pts}`, {
-      fontFamily: "Manrope, sans-serif",
-      fontSize: "16px",
-      color: "#ec4899",
-      stroke: "#ffffff",
-      strokeThickness: 3,
-    }).setOrigin(0.5, 0.5).setDepth(20);
-    this.tweens.add({
-      targets: pop,
-      y: worldY - 60,
-      alpha: { from: 1, to: 0 },
-      duration: 700,
-      ease: "Quad.easeOut",
-      onComplete: () => pop.destroy(),
+    const btnZone = this.add
+      .zone(VW / 2, VH - 82, 200, 60)
+      .setInteractive({ useHandCursor: true });
+
+    btnZone.on("pointerover", () => {
+      btnBg.clear();
+      btnBg.fillStyle(0x9d174d, 1);
+      btnBg.fillRoundedRect(VW / 2 - 90, VH - 110, 180, 56, 28);
+      this.tweens.add({ targets: [btnBg, btnText], scaleX: 1.05, scaleY: 1.05, duration: 80 });
+    });
+    btnZone.on("pointerout", () => {
+      btnBg.clear();
+      btnBg.fillStyle(0xbe185d, 1);
+      btnBg.fillRoundedRect(VW / 2 - 90, VH - 110, 180, 56, 28);
+      btnBg.fillStyle(0xffffff, 0.15);
+      btnBg.fillRoundedRect(VW / 2 - 82, VH - 107, 164, 22, 14);
+      this.tweens.add({ targets: [btnBg, btnText], scaleX: 1, scaleY: 1, duration: 80 });
+    });
+    btnZone.on("pointerdown", () => {
+      this.cameras.main.fadeOut(300, 252, 231, 243);
+      this.time.delayedCall(300, () => this.scene.start("shape"));
     });
 
-    // Deselect sticker after placing
-    this.selectedSticker = null;
-    this.stickerButtons.forEach((btn) => {
-      const bg = btn.getAt(0) as Phaser.GameObjects.Rectangle;
-      bg.setFillStyle(0xfdf4ff).setStrokeStyle(1.5, 0xe9d5ff);
-    });
-    this.selectedHighlight.setVisible(false);
-    this.selectedLabel.setVisible(false);
-  }
-
-  private updateStickerCount(): void {
-    const n = this.placedStickers.length;
-    if (n === 0) {
-      this.stickerCountText.setText("");
-    } else if (n < 3) {
-      this.stickerCountText.setText(`${n} sticker${n > 1 ? "s" : ""} placed — keep going!`);
-    } else if (n < 6) {
-      this.stickerCountText.setText(`${n} stickers — looking great! 🌟`);
-    } else {
-      this.stickerCountText.setText(`${n} stickers — amazing design! ✨`);
-    }
-  }
-
-  // ── Action buttons (Done + Clear) ─────────────────────────────────────────
-  private buildActionButtons(): void {
-    // Done button
-    const doneBg = this.add.rectangle(0, 0, 100, 36, 0xec4899, 1).setStrokeStyle(2, 0xbe185d);
-    const doneLbl = this.add.text(0, 0, "✅ Done!", {
-      fontFamily: "Manrope, sans-serif",
-      fontSize: "15px",
-      color: "#ffffff",
-    }).setOrigin(0.5, 0.5);
-    const doneHit = this.add.rectangle(0, 0, 100, 36, 0xffffff, 0).setInteractive({ useHandCursor: true });
-    this.doneButton = this.add.container(VW / 2 + 60, 90, [doneBg, doneLbl, doneHit]);
-    doneHit.on("pointerdown", () => this.finishDesign());
-    doneHit.on("pointerover", () => doneBg.setFillStyle(0xdb2777));
-    doneHit.on("pointerout", () => doneBg.setFillStyle(0xec4899));
-
-    // Clear button
-    const clearBg = this.add.rectangle(0, 0, 90, 36, 0xf1f5f9, 1).setStrokeStyle(2, 0xd1d5db);
-    const clearLbl = this.add.text(0, 0, "🗑 Clear", {
-      fontFamily: "Manrope, sans-serif",
-      fontSize: "15px",
-      color: "#64748b",
-    }).setOrigin(0.5, 0.5);
-    const clearHit = this.add.rectangle(0, 0, 90, 36, 0xffffff, 0).setInteractive({ useHandCursor: true });
-    this.clearButton = this.add.container(VW / 2 - 55, 90, [clearBg, clearLbl, clearHit]);
-    clearHit.on("pointerdown", () => this.clearStickers());
-    clearHit.on("pointerover", () => clearBg.setFillStyle(0xe2e8f0));
-    clearHit.on("pointerout", () => clearBg.setFillStyle(0xf1f5f9));
-  }
-
-  private clearStickers(): void {
-    this.placedStickers.forEach((s) => s.obj.destroy());
-    this.placedStickers = [];
-    this.score = Math.max(0, this.score - 50);
-    this.onScore(this.score);
-    this.updateStickerCount();
-
-    // Clear flash
-    const flash = this.add.rectangle(this.caseX, this.caseY, this.caseW, this.caseH, 0xffffff, 0.5);
-    this.tweens.add({
-      targets: flash,
-      alpha: 0,
-      duration: 300,
-      onComplete: () => flash.destroy(),
-    });
-  }
-
-  // ── Finish the design ─────────────────────────────────────────────────────
-  private finishDesign(): void {
-    if (this.done) return;
-    this.done = true;
-
-    // Bonus scoring
-    const colorBonus = 20;
-    const patternBonus = this.patternIndex > 0 ? 30 : 0;
-    const stickerBonus = Math.min(this.placedStickers.length * 10, 100);
-    const varietyBonus = this.placedStickers.length >= 5 ? 50 : 0;
-    const totalBonus = colorBonus + patternBonus + stickerBonus + varietyBonus;
-    this.score += totalBonus;
-    this.onScore(this.score);
-
-    // Save high score
-    const stored = localStorage.getItem("phonecasediy_highscore");
-    const prev = stored ? parseInt(stored, 10) || 0 : 0;
-    if (this.score > prev) {
-      localStorage.setItem("phonecasediy_highscore", String(this.score));
-    }
-
-    // Celebration overlay
-    this.time.delayedCall(100, () => this.showCelebration(totalBonus));
-  }
-
-  private showCelebration(bonus: number): void {
-    // Dim overlay
-    const overlay = this.add.rectangle(VW / 2, VH / 2, VW, VH, 0x000000, 0.5).setDepth(50);
-    this.tweens.add({ targets: overlay, alpha: { from: 0, to: 0.5 }, duration: 300 });
-
-    // Card
-    const card = this.add.graphics().setDepth(51);
-    card.fillStyle(0xffffff, 1);
-    card.fillRoundedRect(VW / 2 - 160, VH / 2 - 160, 320, 320, 24);
-    card.lineStyle(3, 0xec4899, 1);
-    card.strokeRoundedRect(VW / 2 - 160, VH / 2 - 160, 320, 320, 24);
-    this.tweens.add({ targets: card, alpha: { from: 0, to: 1 }, duration: 300 });
-
-    const texts: Phaser.GameObjects.Text[] = [];
-
-    texts.push(this.add.text(VW / 2, VH / 2 - 130, "🎉 Amazing Design! 🎉", {
-      fontFamily: "Fraunces, serif",
-      fontSize: "22px",
-      color: "#be185d",
-    }).setOrigin(0.5, 0).setDepth(52));
-
-    texts.push(this.add.text(VW / 2, VH / 2 - 88, `Score: ${this.score}`, {
-      fontFamily: "Fraunces, serif",
-      fontSize: "36px",
-      color: "#7c3aed",
-    }).setOrigin(0.5, 0).setDepth(52));
-
-    const stored = localStorage.getItem("phonecasediy_highscore");
-    const best = stored ? parseInt(stored, 10) || 0 : 0;
-    texts.push(this.add.text(VW / 2, VH / 2 - 42, `Best: ${best}`, {
-      fontFamily: "Manrope, sans-serif",
-      fontSize: "16px",
-      color: "#9333ea",
-    }).setOrigin(0.5, 0).setDepth(52));
-
-    texts.push(this.add.text(VW / 2, VH / 2 - 10, `+${bonus} design bonus!`, {
-      fontFamily: "Manrope, sans-serif",
-      fontSize: "14px",
-      color: "#ec4899",
-    }).setOrigin(0.5, 0).setDepth(52));
-
-    texts.push(this.add.text(VW / 2, VH / 2 + 20, `${this.placedStickers.length} sticker${this.placedStickers.length !== 1 ? "s" : ""} placed`, {
-      fontFamily: "Manrope, sans-serif",
-      fontSize: "14px",
-      color: "#6b7280",
-    }).setOrigin(0.5, 0).setDepth(52));
-
-    // Confetti burst
-    for (let i = 0; i < 40; i++) {
-      this.time.delayedCall(i * 30, () => this.spawnConfetti());
-    }
-
-    // Play Again button
-    const playBg = this.add.rectangle(VW / 2, VH / 2 + 100, 180, 48, 0xec4899, 1)
-      .setStrokeStyle(2, 0xbe185d).setDepth(52).setInteractive({ useHandCursor: true });
-    const playLbl = this.add.text(VW / 2, VH / 2 + 100, "🎨 Design Again!", {
-      fontFamily: "Manrope, sans-serif",
-      fontSize: "16px",
-      color: "#ffffff",
-    }).setOrigin(0.5, 0.5).setDepth(53);
-
-    playBg.on("pointerdown", () => this.scene.restart());
-    playBg.on("pointerover", () => playBg.setFillStyle(0xdb2777));
-    playBg.on("pointerout", () => playBg.setFillStyle(0xec4899));
-
-    // Bounce animation on card
-    const allObjs = [card, playBg, playLbl, ...texts];
-    allObjs.forEach((obj) => {
-      obj.setScale(0.8);
-      this.tweens.add({
-        targets: obj,
-        scale: 1,
-        duration: 400,
-        ease: "Back.easeOut",
-        delay: 150,
-      });
-    });
-  }
-
-  private spawnConfetti(): void {
-    const x = Phaser.Math.Between(40, VW - 40);
-    const y = Phaser.Math.Between(VH / 2 - 180, VH / 2 + 180);
-    const colors = [0xec4899, 0xfacc15, 0x3b82f6, 0x10b981, 0xf472b6, 0xa855f7];
-    const color = colors[Phaser.Math.Between(0, colors.length - 1)] ?? 0xec4899;
-    const size = Phaser.Math.Between(4, 10);
-    const gfx = this.add.graphics().setDepth(60);
-    gfx.fillStyle(color, 1);
-    if (Phaser.Math.Between(0, 1)) {
-      gfx.fillRect(x, y, size, size / 2);
-    } else {
-      gfx.fillCircle(x, y, size / 2);
-    }
-    this.tweens.add({
-      targets: gfx,
-      y: y + Phaser.Math.Between(40, 120),
-      x: x + Phaser.Math.Between(-30, 30),
-      alpha: { from: 1, to: 0 },
-      angle: Phaser.Math.Between(-180, 180),
-      duration: Phaser.Math.Between(600, 1200),
-      ease: "Quad.easeIn",
-      onComplete: () => gfx.destroy(),
-    });
-  }
-
-  update(): void {
-    // Phaser handles all input via events — nothing needed in the loop
+    this.cameras.main.fadeIn(400, 252, 231, 243);
   }
 }
 
-// ─── Entry point ──────────────────────────────────────────────────────────────
+// ─── SCENE 2: Shape Picker ────────────────────────────────────────────────────
+class ShapeScene extends Phaser.Scene {
+  constructor() {
+    super("shape");
+  }
+
+  create(): void {
+    const bg = this.add.graphics();
+    bg.fillGradientStyle(0xfdf4ff, 0xfdf4ff, 0xfce7f3, 0xfce7f3, 1);
+    bg.fillRect(0, 0, VW, VH);
+
+    this.add
+      .text(VW / 2, 52, "Choose Your Case Shape", {
+        fontFamily: "Fraunces, serif",
+        fontSize: "26px",
+        color: "#7c3aed",
+        align: "center",
+        wordWrap: { width: VW - 40 },
+      })
+      .setOrigin(0.5);
+
+    this.add
+      .text(VW / 2, 92, "Tap a shape to select it", {
+        fontFamily: "Manrope, sans-serif",
+        fontSize: "15px",
+        color: "#9d174d",
+      })
+      .setOrigin(0.5);
+
+    const shapes: { id: GameState["caseShape"]; label: string; emoji: string }[] = [
+      { id: "rounded", label: "Classic Rounded", emoji: "🌸" },
+      { id: "square", label: "Sharp Square", emoji: "🔲" },
+      { id: "bumper", label: "Bumper Case", emoji: "💫" },
+    ];
+
+    const positions = [VW / 2 - 120, VW / 2, VW / 2 + 120];
+    let selectedId: GameState["caseShape"] = "rounded";
+
+    const selectionRings: Phaser.GameObjects.Graphics[] = [];
+
+    shapes.forEach((s, i) => {
+      const cx = positions[i]!;
+      const cy = 310;
+
+      // Selection ring
+      const ring = this.add.graphics();
+      selectionRings.push(ring);
+      const drawRing = (active: boolean) => {
+        ring.clear();
+        if (active) {
+          ring.lineStyle(4, 0x7c3aed, 1);
+          ring.strokeRoundedRect(cx - 68, cy - 108, 136, 216, 20);
+          ring.fillStyle(0x7c3aed, 0.07);
+          ring.fillRoundedRect(cx - 68, cy - 108, 136, 216, 20);
+        }
+      };
+      drawRing(i === 0);
+
+      // Card bg
+      const card = this.add.graphics();
+      card.fillStyle(0xffffff, 0.85);
+      card.fillRoundedRect(cx - 64, cy - 104, 128, 208, 18);
+
+      // Phone case preview
+      const gfx = this.add.graphics();
+      drawPhoneCase(gfx, cx, cy - 10, 0xd8b4fe, s.id, 0.72);
+
+      // Label
+      this.add
+        .text(cx, cy + 88, s.emoji + "\n" + s.label, {
+          fontFamily: "Manrope, sans-serif",
+          fontSize: "12px",
+          color: "#581c87",
+          align: "center",
+        })
+        .setOrigin(0.5, 0);
+
+      // Hit zone
+      const zone = this.add
+        .zone(cx, cy, 130, 210)
+        .setInteractive({ useHandCursor: true });
+
+      zone.on("pointerdown", () => {
+        selectedId = s.id;
+        selectionRings.forEach((r, ri) => {
+          r.clear();
+          if (ri === i) {
+            r.lineStyle(4, 0x7c3aed, 1);
+            r.strokeRoundedRect(cx - 68, cy - 108, 136, 216, 20);
+            r.fillStyle(0x7c3aed, 0.07);
+            r.fillRoundedRect(cx - 68, cy - 108, 136, 216, 20);
+          }
+        });
+        this.tweens.add({ targets: [card, gfx], scaleX: 0.95, scaleY: 0.95, duration: 60, yoyo: true });
+      });
+    });
+
+    // Next button
+    const btnBg = this.add.graphics();
+    const drawBtn = (hover: boolean) => {
+      btnBg.clear();
+      btnBg.fillStyle(hover ? 0x6d28d9 : 0x7c3aed, 1);
+      btnBg.fillRoundedRect(VW / 2 - 90, VH - 100, 180, 52, 26);
+      btnBg.fillStyle(0xffffff, 0.15);
+      btnBg.fillRoundedRect(VW / 2 - 82, VH - 97, 164, 20, 13);
+    };
+    drawBtn(false);
+
+    const btnText = this.add
+      .text(VW / 2, VH - 74, "Next →", {
+        fontFamily: "Manrope, sans-serif",
+        fontSize: "20px",
+        color: "#ffffff",
+        fontStyle: "bold",
+      })
+      .setOrigin(0.5);
+
+    const btnZone = this.add
+      .zone(VW / 2, VH - 74, 200, 56)
+      .setInteractive({ useHandCursor: true });
+
+    btnZone.on("pointerover", () => drawBtn(true));
+    btnZone.on("pointerout", () => drawBtn(false));
+    btnZone.on("pointerdown", () => {
+      state.caseShape = selectedId;
+      this.cameras.main.fadeOut(300, 253, 244, 255);
+      this.time.delayedCall(300, () => this.scene.start("clean"));
+    });
+
+    this.cameras.main.fadeIn(400, 253, 244, 255);
+  }
+}
+
+// ─── SCENE 3: Cleaning ────────────────────────────────────────────────────────
+class CleanScene extends Phaser.Scene {
+  private cleanProgress = 0; // 0–1
+  private timeLeft = 5;
+  private timerEvent?: Phaser.Time.TimerEvent;
+  private timerText!: Phaser.GameObjects.Text;
+  private caseGfx!: Phaser.GameObjects.Graphics;
+  private dirtMask!: Phaser.GameObjects.Graphics;
+  private sponge!: Phaser.GameObjects.Text;
+  private progressBar!: Phaser.GameObjects.Graphics;
+  private progressBg!: Phaser.GameObjects.Graphics;
+  private scrubPoints: { x: number; y: number }[] = [];
+  private done = false;
+  private caseX = VW / 2;
+  private caseY = 340;
+  private caseW = 110;
+  private caseH = 190;
+
+  constructor() {
+    super("clean");
+  }
+
+  create(): void {
+    this.cleanProgress = 0;
+    this.timeLeft = 5;
+    this.scrubPoints = [];
+    this.done = false;
+
+    const bg = this.add.graphics();
+    bg.fillGradientStyle(0xe0f2fe, 0xe0f2fe, 0xf0fdf4, 0xf0fdf4, 1);
+    bg.fillRect(0, 0, VW, VH);
+
+    // Shelf / table
+    const shelf = this.add.graphics();
+    shelf.fillStyle(0xd4a574, 1);
+    shelf.fillRoundedRect(40, 450, VW - 80, 18, 9);
+    shelf.fillStyle(0xb8864e, 1);
+    shelf.fillRect(40, 462, VW - 80, 6);
+
+    // Title
+    this.add
+      .text(VW / 2, 46, "🧽  Clean the Case!", {
+        fontFamily: "Fraunces, serif",
+        fontSize: "28px",
+        color: "#0f766e",
+      })
+      .setOrigin(0.5);
+
+    this.add
+      .text(VW / 2, 84, "Scrub away the dirt before time runs out!", {
+        fontFamily: "Manrope, sans-serif",
+        fontSize: "14px",
+        color: "#134e4a",
+        align: "center",
+        wordWrap: { width: VW - 40 },
+      })
+      .setOrigin(0.5);
+
+    // Timer display
+    this.timerText = this.add
+      .text(VW / 2, 128, "⏱  5", {
+        fontFamily: "Manrope, sans-serif",
+        fontSize: "32px",
+        color: "#dc2626",
+        fontStyle: "bold",
+      })
+      .setOrigin(0.5);
+
+    // Progress bar bg
+    this.progressBg = this.add.graphics();
+    this.progressBg.fillStyle(0xd1d5db, 1);
+    this.progressBg.fillRoundedRect(VW / 2 - 100, 162, 200, 14, 7);
+
+    // Progress bar fill
+    this.progressBar = this.add.graphics();
+
+    // Dirty phone case
+    this.caseGfx = this.add.graphics();
+    drawPhoneCase(this.caseGfx, this.caseX, this.caseY, 0xffffff, state.caseShape, 1, true);
+
+    // Sponge cursor
+    this.sponge = this.add.text(0, 0, "🧽", { fontSize: "40px" }).setOrigin(0.5).setDepth(10);
+    this.sponge.setVisible(false);
+
+    // Scrub trail graphics
+    this.dirtMask = this.add.graphics().setDepth(5);
+
+    // Input
+    this.input.on("pointermove", (p: Phaser.Input.Pointer) => {
+      this.sponge.setVisible(true);
+      this.sponge.setPosition(p.x, p.y - 20);
+      if (p.isDown && !this.done) {
+        this.scrub(p.x, p.y);
+      }
+    });
+    this.input.on("pointerdown", (p: Phaser.Input.Pointer) => {
+      if (!this.done) this.scrub(p.x, p.y);
+    });
+    this.input.on("pointerout", () => this.sponge.setVisible(false));
+
+    // Countdown timer
+    this.timerEvent = this.time.addEvent({
+      delay: 1000,
+      loop: true,
+      callback: () => {
+        if (this.done) return;
+        this.timeLeft -= 1;
+        this.timerText.setText("⏱  " + Math.max(0, this.timeLeft));
+        if (this.timeLeft <= 2) {
+          this.timerText.setColor("#dc2626");
+          this.tweens.add({ targets: this.timerText, scaleX: 1.3, scaleY: 1.3, duration: 120, yoyo: true });
+        }
+        if (this.timeLeft <= 0) {
+          this.finishCleaning();
+        }
+      },
+    });
+
+    this.cameras.main.fadeIn(400, 224, 242, 254);
+  }
+
+  private scrub(px: number, py: number): void {
+    // Only count scrubs within the case area
+    const inCase =
+      px > this.caseX - this.caseW / 2 - 10 &&
+      px < this.caseX + this.caseW / 2 + 10 &&
+      py > this.caseY - this.caseH / 2 - 10 &&
+      py < this.caseY + this.caseH / 2 + 10;
+
+    if (!inCase) return;
+
+    // Add scrub point
+    const alreadyNear = this.scrubPoints.some(
+      (sp) => Math.abs(sp.x - px) < 18 && Math.abs(sp.y - py) < 18
+    );
+    if (!alreadyNear) {
+      this.scrubPoints.push({ x: px, y: py });
+    }
+
+    // Redraw clean spots
+    this.dirtMask.clear();
+    this.dirtMask.fillStyle(0xf0f4f8, 1);
+    for (const sp of this.scrubPoints) {
+      this.dirtMask.fillCircle(sp.x, sp.y, 28);
+    }
+
+    // Estimate coverage
+    const caseArea = this.caseW * this.caseH;
+    const scrubArea = this.scrubPoints.length * Math.PI * 28 * 28;
+    this.cleanProgress = Math.min(1, scrubArea / (caseArea * 0.72));
+
+    // Update progress bar
+    this.progressBar.clear();
+    this.progressBar.fillStyle(0x10b981, 1);
+    this.progressBar.fillRoundedRect(VW / 2 - 100, 162, 200 * this.cleanProgress, 14, 7);
+
+    // Auto-finish if fully clean
+    if (this.cleanProgress >= 1 && !this.done) {
+      this.finishCleaning();
+    }
+  }
+
+  private finishCleaning(): void {
+    if (this.done) return;
+    this.done = true;
+    this.timerEvent?.remove();
+    this.sponge.setVisible(false);
+
+    // Show clean case
+    this.caseGfx.clear();
+    drawPhoneCase(this.caseGfx, this.caseX, this.caseY, 0xf8fafc, state.caseShape, 1, false);
+    this.dirtMask.clear();
+
+    // "All clean!" message
+    const msg = this.add
+      .text(VW / 2, 520, "✨ Squeaky clean!", {
+        fontFamily: "Fraunces, serif",
+        fontSize: "26px",
+        color: "#0f766e",
+      })
+      .setOrigin(0.5)
+      .setAlpha(0);
+
+    this.tweens.add({ targets: msg, alpha: 1, y: 510, duration: 400 });
+
+    // Proceed button
+    const btnBg = this.add.graphics();
+    btnBg.fillStyle(0x0f766e, 1);
+    btnBg.fillRoundedRect(VW / 2 - 90, VH - 100, 180, 52, 26);
+    btnBg.fillStyle(0xffffff, 0.15);
+    btnBg.fillRoundedRect(VW / 2 - 82, VH - 97, 164, 20, 13);
+    btnBg.setAlpha(0);
+
+    const btnText = this.add
+      .text(VW / 2, VH - 74, "Paint it! 🎨", {
+        fontFamily: "Manrope, sans-serif",
+        fontSize: "20px",
+        color: "#ffffff",
+        fontStyle: "bold",
+      })
+      .setOrigin(0.5)
+      .setAlpha(0);
+
+    this.tweens.add({ targets: [btnBg, btnText], alpha: 1, duration: 500, delay: 400 });
+
+    const btnZone = this.add
+      .zone(VW / 2, VH - 74, 200, 56)
+      .setInteractive({ useHandCursor: true });
+
+    btnZone.on("pointerdown", () => {
+      this.cameras.main.fadeOut(300, 240, 253, 244);
+      this.time.delayedCall(300, () => this.scene.start("paint"));
+    });
+  }
+}
+
+// ─── SCENE 4: Painting ────────────────────────────────────────────────────────
+class PaintScene extends Phaser.Scene {
+  private caseColor = 0xffffff;
+  private caseGfx!: Phaser.GameObjects.Graphics;
+  private selectedSwatch: Phaser.GameObjects.Graphics | null = null;
+  private selectedColor = 0xffffff;
+
+  constructor() {
+    super("paint");
+  }
+
+  create(): void {
+    this.caseColor = 0xffffff;
+    this.selectedColor = 0xffffff;
+
+    const bg = this.add.graphics();
+    bg.fillGradientStyle(0xfff7ed, 0xfff7ed, 0xfdf2f8, 0xfdf2f8, 1);
+    bg.fillRect(0, 0, VW, VH);
+
+    // Easel decoration
+    const easel = this.add.graphics();
+    easel.fillStyle(0xc8a46e, 1);
+    easel.fillRect(VW / 2 - 3, 180, 6, 260);
+    easel.fillRect(VW / 2 - 80, 180, 160, 8);
+
+    this.add
+      .text(VW / 2, 44, "🎨  Paint Your Case!", {
+        fontFamily: "Fraunces, serif",
+        fontSize: "28px",
+        color: "#c2410c",
+      })
+      .setOrigin(0.5);
+
+    this.add
+      .text(VW / 2, 82, "Tap a color to paint your case", {
+        fontFamily: "Manrope, sans-serif",
+        fontSize: "15px",
+        color: "#7c2d12",
+      })
+      .setOrigin(0.5);
+
+    // Phone case preview
+    this.caseGfx = this.add.graphics();
+    this.redrawCase();
+
+    // Color palette
+    const colors: { hex: number; name: string }[] = [
+      { hex: 0xef4444, name: "Red" },
+      { hex: 0xf472b6, name: "Pink" },
+      { hex: 0x1a1a2e, name: "Black" },
+      { hex: 0xf8fafc, name: "White" },
+      { hex: 0x92400e, name: "Brown" },
+      { hex: 0xf97316, name: "Orange" },
+      { hex: 0x3b82f6, name: "Blue" },
+      { hex: 0x22c55e, name: "Green" },
+      { hex: 0x8b5cf6, name: "Purple" },
+      { hex: 0xfacc15, name: "Yellow" },
+    ];
+
+    const cols = 5;
+    const swatchSize = 46;
+    const gap = 12;
+    const totalW = cols * swatchSize + (cols - 1) * gap;
+    const startX = (VW - totalW) / 2;
+    const startY = 530;
+
+    let firstSwatch: Phaser.GameObjects.Graphics | null = null;
+
+    colors.forEach((c, i) => {
+      const col = i % cols;
+      const row = Math.floor(i / cols);
+      const sx = startX + col * (swatchSize + gap) + swatchSize / 2;
+      const sy = startY + row * (swatchSize + gap) + swatchSize / 2;
+
+      const swatch = this.add.graphics();
+      const drawSwatch = (selected: boolean) => {
+        swatch.clear();
+        if (selected) {
+          swatch.lineStyle(4, 0x1a1a2e, 1);
+          swatch.strokeCircle(sx, sy, swatchSize / 2 + 3);
+        }
+        swatch.fillStyle(c.hex, 1);
+        swatch.fillCircle(sx, sy, swatchSize / 2);
+        // Shine
+        swatch.fillStyle(0xffffff, 0.25);
+        swatch.fillCircle(sx - 7, sy - 7, 8);
+      };
+      drawSwatch(i === 0);
+
+      if (i === 0) {
+        firstSwatch = swatch;
+        this.selectedSwatch = swatch;
+      }
+
+      const zone = this.add
+        .zone(sx, sy, swatchSize + 8, swatchSize + 8)
+        .setInteractive({ useHandCursor: true });
+
+      zone.on("pointerdown", () => {
+        // Deselect old
+        if (this.selectedSwatch && this.selectedSwatch !== swatch) {
+          const oldIdx = colors.findIndex((_, ci) => {
+            const oc = ci % cols;
+            const or = Math.floor(ci / cols);
+            const ox = startX + oc * (swatchSize + gap) + swatchSize / 2;
+            const oy = startY + or * (swatchSize + gap) + swatchSize / 2;
+            return Math.abs(ox - sx) > 1 || Math.abs(oy - sy) > 1;
+          });
+          // Just redraw all swatches via a stored ref
+        }
+        this.selectedSwatch = swatch;
+        // Redraw all swatches
+        colors.forEach((cc, ci) => {
+          const ccol = ci % cols;
+          const crow = Math.floor(ci / cols);
+          const csx = startX + ccol * (swatchSize + gap) + swatchSize / 2;
+          const csy = startY + crow * (swatchSize + gap) + swatchSize / 2;
+          // We need refs to redraw — use the zone's parent graphics
+          // Simplest: just clear and redraw this swatch
+          if (ci === i) {
+            swatch.clear();
+            swatch.lineStyle(4, 0x1a1a2e, 1);
+            swatch.strokeCircle(csx, csy, swatchSize / 2 + 3);
+            swatch.fillStyle(cc.hex, 1);
+            swatch.fillCircle(csx, csy, swatchSize / 2);
+            swatch.fillStyle(0xffffff, 0.25);
+            swatch.fillCircle(csx - 7, csy - 7, 8);
+          }
+        });
+
+        this.selectedColor = c.hex;
+        this.caseColor = c.hex;
+        this.redrawCase();
+
+        this.tweens.add({ targets: swatch, scaleX: 1.2, scaleY: 1.2, duration: 80, yoyo: true });
+      });
+
+      // Label on hover
+      zone.on("pointerover", () => {
+        swatch.clear();
+        swatch.lineStyle(3, 0x6b7280, 1);
+        swatch.strokeCircle(sx, sy, swatchSize / 2 + 2);
+        swatch.fillStyle(c.hex, 1);
+        swatch.fillCircle(sx, sy, swatchSize / 2);
+        swatch.fillStyle(0xffffff, 0.25);
+        swatch.fillCircle(sx - 7, sy - 7, 8);
+      });
+      zone.on("pointerout", () => drawSwatch(this.selectedColor === c.hex));
+    });
+
+    // Suppress unused warning
+    void firstSwatch;
+
+    // Done button
+    const btnBg = this.add.graphics();
+    btnBg.fillStyle(0xc2410c, 1);
+    btnBg.fillRoundedRect(VW / 2 - 90, VH - 68, 180, 52, 26);
+    btnBg.fillStyle(0xffffff, 0.15);
+    btnBg.fillRoundedRect(VW / 2 - 82, VH - 65, 164, 20, 13);
+
+    const btnText = this.add
+      .text(VW / 2, VH - 42, "I'm Done! 🎉", {
+        fontFamily: "Manrope, sans-serif",
+        fontSize: "20px",
+        color: "#ffffff",
+        fontStyle: "bold",
+      })
+      .setOrigin(0.5);
+
+    const btnZone = this.add
+      .zone(VW / 2, VH - 42, 200, 56)
+      .setInteractive({ useHandCursor: true });
+
+    btnZone.on("pointerover", () => {
+      btnBg.clear();
+      btnBg.fillStyle(0x9a3412, 1);
+      btnBg.fillRoundedRect(VW / 2 - 90, VH - 68, 180, 52, 26);
+      this.tweens.add({ targets: [btnBg, btnText], scaleX: 1.04, scaleY: 1.04, duration: 60, yoyo: true });
+    });
+    btnZone.on("pointerout", () => {
+      btnBg.clear();
+      btnBg.fillStyle(0xc2410c, 1);
+      btnBg.fillRoundedRect(VW / 2 - 90, VH - 68, 180, 52, 26);
+      btnBg.fillStyle(0xffffff, 0.15);
+      btnBg.fillRoundedRect(VW / 2 - 82, VH - 65, 164, 20, 13);
+    });
+    btnZone.on("pointerdown", () => {
+      state.paintColor = this.caseColor;
+      this.cameras.main.fadeOut(300, 255, 247, 237);
+      this.time.delayedCall(300, () => this.scene.start("finish"));
+    });
+
+    this.cameras.main.fadeIn(400, 255, 247, 237);
+  }
+
+  private redrawCase(): void {
+    this.caseGfx.clear();
+    drawPhoneCase(this.caseGfx, VW / 2, 330, this.caseColor, state.caseShape, 1.1);
+  }
+}
+
+// ─── SCENE 5: Finish ─────────────────────────────────────────────────────────
+class FinishScene extends Phaser.Scene {
+  constructor() {
+    super("finish");
+  }
+
+  create(): void {
+    state.onScore(100);
+
+    const bg = this.add.graphics();
+    bg.fillGradientStyle(0xfdf2f8, 0xfdf2f8, 0xfdf4ff, 0xfdf4ff, 1);
+    bg.fillRect(0, 0, VW, VH);
+
+    // Confetti
+    for (let i = 0; i < 30; i++) {
+      const cx = Phaser.Math.Between(10, VW - 10);
+      const cy = Phaser.Math.Between(-20, VH + 20);
+      const confColor = Phaser.Utils.Array.GetRandom([
+        0xef4444, 0xf472b6, 0xfacc15, 0x22c55e, 0x3b82f6, 0x8b5cf6,
+      ]) as number;
+      const conf = this.add.rectangle(
+        cx, cy,
+        Phaser.Math.Between(6, 14),
+        Phaser.Math.Between(6, 14),
+        confColor
+      );
+      this.tweens.add({
+        targets: conf,
+        y: cy + Phaser.Math.Between(300, 700),
+        x: cx + Phaser.Math.Between(-60, 60),
+        angle: Phaser.Math.Between(-360, 360),
+        alpha: 0,
+        duration: Phaser.Math.Between(1500, 3000),
+        delay: Phaser.Math.Between(0, 1000),
+        repeat: -1,
+        onRepeat: () => {
+          conf.y = Phaser.Math.Between(-20, 0);
+          conf.x = Phaser.Math.Between(10, VW - 10);
+          conf.alpha = 1;
+        },
+      });
+    }
+
+    // Stars
+    this.add.text(VW / 2, 60, "🌟 🎉 🌟", { fontSize: "36px" }).setOrigin(0.5);
+
+    this.add
+      .text(VW / 2, 116, "Your Case is Ready!", {
+        fontFamily: "Fraunces, serif",
+        fontSize: "32px",
+        color: "#be185d",
+        stroke: "#fce7f3",
+        strokeThickness: 3,
+      })
+      .setOrigin(0.5);
+
+    this.add
+      .text(VW / 2, 158, "What an amazing design! 💖", {
+        fontFamily: "Manrope, sans-serif",
+        fontSize: "16px",
+        color: "#9d174d",
+      })
+      .setOrigin(0.5);
+
+    // Final phone case — big and proud
+    const finalGfx = this.add.graphics();
+    drawPhoneCase(finalGfx, VW / 2, 360, state.paintColor, state.caseShape, 1.35);
+
+    // Sparkle tweens on the case
+    this.tweens.add({
+      targets: finalGfx,
+      scaleX: 1.04,
+      scaleY: 1.04,
+      duration: 900,
+      yoyo: true,
+      repeat: -1,
+      ease: "Sine.easeInOut",
+    });
+
+    // Color name label
+    const colorNames: Record<number, string> = {
+      0xef4444: "Red",
+      0xf472b6: "Pink",
+      0x1a1a2e: "Black",
+      0xf8fafc: "White",
+      0x92400e: "Brown",
+      0xf97316: "Orange",
+      0x3b82f6: "Blue",
+      0x22c55e: "Green",
+      0x8b5cf6: "Purple",
+      0xfacc15: "Yellow",
+      0xffffff: "White",
+    };
+    const colorName = colorNames[state.paintColor] ?? "Custom";
+    const shapeName =
+      state.caseShape === "rounded"
+        ? "Classic Rounded"
+        : state.caseShape === "square"
+        ? "Sharp Square"
+        : "Bumper Case";
+
+    this.add
+      .text(VW / 2, 510, `${colorName} • ${shapeName}`, {
+        fontFamily: "Manrope, sans-serif",
+        fontSize: "15px",
+        color: "#7c3aed",
+        fontStyle: "bold",
+      })
+      .setOrigin(0.5);
+
+    // Play again button
+    const btnBg = this.add.graphics();
+    const drawBtn = (hover: boolean) => {
+      btnBg.clear();
+      btnBg.fillStyle(hover ? 0x9d174d : 0xbe185d, 1);
+      btnBg.fillRoundedRect(VW / 2 - 100, VH - 100, 200, 56, 28);
+      btnBg.fillStyle(0xffffff, 0.15);
+      btnBg.fillRoundedRect(VW / 2 - 92, VH - 97, 184, 22, 14);
+    };
+    drawBtn(false);
+
+    const btnText = this.add
+      .text(VW / 2, VH - 72, "🔄  Make Another!", {
+        fontFamily: "Manrope, sans-serif",
+        fontSize: "20px",
+        color: "#ffffff",
+        fontStyle: "bold",
+      })
+      .setOrigin(0.5);
+
+    const btnZone = this.add
+      .zone(VW / 2, VH - 72, 220, 60)
+      .setInteractive({ useHandCursor: true });
+
+    btnZone.on("pointerover", () => drawBtn(true));
+    btnZone.on("pointerout", () => drawBtn(false));
+    btnZone.on("pointerdown", () => {
+      state.onScore(0);
+      this.cameras.main.fadeOut(300, 253, 242, 248);
+      this.time.delayedCall(300, () => this.scene.start("menu"));
+    });
+
+    this.cameras.main.fadeIn(500, 253, 242, 248);
+  }
+}
+
+// ─── Entry point ─────────────────────────────────────────────────────────────
 export function startGame(parent: HTMLElement, onScore: (n: number) => void): () => void {
+  state.onScore = onScore;
+
   const game = new Phaser.Game({
     type: Phaser.AUTO,
     parent,
     width: VW,
     height: VH,
-    backgroundColor: "#fdf2f8",
+    backgroundColor: "#fce7f3",
     scale: {
       mode: Phaser.Scale.FIT,
       autoCenter: Phaser.Scale.CENTER_BOTH,
     },
-    scene: new PhoneCaseScene(onScore),
+    scene: [MenuScene, ShapeScene, CleanScene, PaintScene, FinishScene],
     banner: false,
   });
 
